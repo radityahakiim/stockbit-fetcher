@@ -90,6 +90,11 @@ class Worker(threading.Thread):
                     if found:
                         holdings = found
                     tickers += list(holdings)
+                if cfg["watchlist"]:
+                    self.emit("status", text="Reading your watchlist…")
+                    for t in fetcher.fetch_watchlist():
+                        if t not in tickers:
+                            tickers.append(t)
                 tickers += [t for t in cfg["tickers"] if t not in tickers]
                 if cfg["trending"]:
                     self.emit("status", text="Discovering trending stocks…")
@@ -176,11 +181,14 @@ class App(tk.Tk):
         box = tk.LabelFrame(f, text=" What to monitor ", padx=10, pady=8)
         box.grid(row=1, column=0, sticky="nwe", padx=(0, 12))
         self.var_portfolio = tk.BooleanVar(value=True)
+        self.var_watchlist = tk.BooleanVar(value=False)
         self.var_trending = tk.BooleanVar(value=True)
         self.var_movers = tk.BooleanVar(value=False)
         self.var_once = tk.BooleanVar(value=False)
         tk.Checkbutton(box, text="My portfolio (owned stocks — labeled HOLD / NEUTRAL / SELL)",
                        variable=self.var_portfolio, anchor="w").pack(fill="x")
+        tk.Checkbutton(box, text="My Watchlist (stockbit.com/watchlist)",
+                       variable=self.var_watchlist, anchor="w").pack(fill="x")
         tk.Checkbutton(box, text="Trending Stocks strip on stockbit.com/stream",
                        variable=self.var_trending, anchor="w").pack(fill="x")
         tk.Checkbutton(box, text="Movers — Value / Volume / Frequency / IEP-IEV / Net Foreign Buy & Sell (no Gainer/Loser)",
@@ -264,6 +272,7 @@ class App(tk.Tk):
         try:
             cfg = {
                 "portfolio": self.var_portfolio.get(),
+                "watchlist": self.var_watchlist.get(),
                 "trending": self.var_trending.get(),
                 "movers": self.var_movers.get(),
                 "once": self.var_once.get(),
@@ -276,9 +285,11 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showerror("Invalid input", "Interval, page wait and trending count must be numbers.")
             return
-        if not (cfg["portfolio"] or cfg["trending"] or cfg["movers"] or cfg["tickers"]):
+        if not (cfg["portfolio"] or cfg["watchlist"] or cfg["trending"]
+                or cfg["movers"] or cfg["tickers"]):
             messagebox.showerror("Nothing selected",
-                                 "Tick portfolio, trending or movers, or type at least one ticker.")
+                                 "Tick portfolio, watchlist, trending or movers, "
+                                 "or type at least one ticker.")
             return
 
         self.setup_frame.pack_forget()

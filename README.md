@@ -36,6 +36,7 @@ In that Edge window, go to https://stockbit.com and sign in.
 python main.py BBCA BBRI TLKM ASII            # live monitor, refresh every 5 min
 python main.py --trending --top 5             # monitor Stockbit's Trending Stocks strip
 python main.py --portfolio                    # monitor & score the stocks you own
+python main.py --watchlist                    # monitor your Stockbit watchlist
 python main.py --movers                       # monitor Movers: Top Value/Volume/Frequency
 python main.py BBCA --trending                # your picks + whatever is trending
 python main.py BBCA BBRI --once --verbose     # one scan with reasons per verdict
@@ -50,7 +51,7 @@ python gui.py
 
 A classic-style desktop GUI with two screens:
 
-1. **Setup screen (shown on open):** a checklist of what to monitor — My portfolio, Trending Stocks, Movers (6 categories), Single scan only — plus a field for extra tickers, and timing/connection inputs (refresh interval, page-load wait, trending count, CDP endpoint). Defaults match the CLI.
+1. **Setup screen (shown on open):** a checklist of what to monitor — My portfolio, My Watchlist, Trending Stocks, Movers (6 categories), Single scan only — plus a field for extra tickers, and timing/connection inputs (refresh interval, page-load wait, trending count, CDP endpoint). Defaults match the CLI.
 2. **Monitor screen:** the same live table, updated after every stock — color-coded verdicts (green HOLD/WORTH TO BUY, red SELL/NOT WORTH TO BUY, amber NEUTRAL), owned stocks tagged "(In Portfolio)" with Avg and P&L%, a status line with countdown, **Pause Timer** and **Refresh** buttons (pause freezes the countdown; refresh starts a new cycle immediately), and a "Why" panel that shows the scoring reasons when you select a row. "Stop & Back to Setup" returns to the checklist.
 
 The GUI runs the same `fetcher.py` + `scoring.py` engine on a background thread, so the window stays responsive during page loads. Tkinter ships with Python on Windows; on Linux install `python3-tk`.
@@ -79,6 +80,27 @@ python main.py --portfolio BBRI               # owned + manual picks
 ```
 
 With `--portfolio`, each cycle starts by opening your Stockbit **Portfolio** page and reading your holdings from the JSON it loads (avg price, lots, unrealized P&L when available; plain ticker list as fallback). Owned stocks are listed **first**, tagged **(In Portfolio)**, and get two extra columns: **Avg** (your average price) and **P&L%** (Stockbit's unrealized % if provided, otherwise computed from the live price vs your average). Holdings are re-read every cycle, so buys/sells reflect automatically. Owned stocks use owner-framed labels on the same thresholds: **HOLD / NEUTRAL / SELL** instead of WORTH TO BUY / NEUTRAL / NOT WORTH TO BUY, and are tagged **(In Portfolio)** beside the ticker. A SELL label means the fundamentals score poorly right now — treat it as a cue to re-examine the position (your cost basis, thesis, and taxes are yours to weigh), not an automatic order.
+
+## Watchlist mode
+
+```bash
+python main.py --watchlist                    # score your Stockbit watchlist
+python main.py --watchlist --portfolio        # watchlist + owned, merged & deduped
+```
+
+With `--watchlist` (or the Watchlist checkbox in the GUI), each cycle opens `stockbit.com/watchlist` and reads the Symbol column of your watchlist table, in display order.
+
+### One row per stock across all sources
+
+Portfolio, watchlist, manual tickers, trending, and movers are merged into a single de-duplicated list — **a stock that appears in more than one source is shown once**, at its earliest source position. The precedence is:
+
+1. **Portfolio** (owned — so it keeps its HOLD/NEUTRAL/SELL label and (In Portfolio) tag)
+2. **Watchlist**
+3. **Manual tickers**
+4. **Trending**
+5. **Movers**
+
+So if BBCA is both on your watchlist and trending, it's fetched and scored once, listed in the watchlist position; if you also own it, it stays in the portfolio position with owned framing.
 
 ## Movers mode
 

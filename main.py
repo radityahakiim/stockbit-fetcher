@@ -182,6 +182,8 @@ def main() -> int:
                     help="monitor Stockbit's Trending stocks (list re-discovered every refresh)")
     ap.add_argument("--portfolio", action="store_true",
                     help="also monitor the stocks you own (read from your Stockbit portfolio)")
+    ap.add_argument("--watchlist", action="store_true",
+                    help="also monitor your Stockbit Watchlist")
     ap.add_argument("--movers", action="store_true",
                     help="also monitor Movers (Top Value/Volume/Frequency, IEP/IEV, "
                          "Net Foreign Buy/Sell; Top Gainer and Top Loser are excluded)")
@@ -193,8 +195,10 @@ def main() -> int:
     ap.add_argument("--page-wait", type=float, default=8.0, help="seconds to let each symbol page load")
     args = ap.parse_args()
 
-    if not args.tickers and not args.trending and not args.portfolio and not args.movers:
-        console.print("[bold red]Give tickers, or use --trending / --portfolio / --movers.[/]")
+    if not args.tickers and not args.trending and not args.portfolio \
+            and not args.movers and not args.watchlist:
+        console.print("[bold red]Give tickers, or use "
+                      "--portfolio / --watchlist / --trending / --movers.[/]")
         return 1
 
     fetcher = StockbitBrowserFetcher(cdp_url=args.cdp, page_wait_s=args.page_wait)
@@ -224,6 +228,13 @@ def main() -> int:
                 console.print("[yellow]Couldn't read the portfolio page — "
                               "check you're logged in.[/]")
             tickers += list(holdings)     # owned stocks go first
+        if args.watchlist:
+            if live:
+                live.update(build_table(last_list or tickers, cache, args.verbose,
+                                        status="reading your watchlist…", holdings=pf_view))
+            for t in fetcher.fetch_watchlist():
+                if t not in tickers:
+                    tickers.append(t)
         tickers += [t for t in (x.upper() for x in args.tickers) if t not in tickers]
         if args.trending:
             if live:

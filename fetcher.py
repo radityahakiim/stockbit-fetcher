@@ -369,6 +369,69 @@ class StockbitBrowserFetcher:
 
         return found[:limit]
 
+    # -- watchlist discovery --------------------------------------------
+    WATCHLIST_URLS = (
+        "https://stockbit.com/watchlist",
+        "https://stockbit.com/#/watchlist",
+    )
+
+    def fetch_watchlist(self, limit: int = 50) -> list[str]:
+        """Open your Stockbit Watchlist page and return the symbols in the
+        leftmost column, in display order (JSON first, DOM table fallback)."""
+        if not self._page:
+            return []
+        found: list[str] = []
+        for url in self.WATCHLIST_URLS:
+            self._captured.clear()
+            try:
+                self._page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                self._page.wait_for_timeout(4000)
+            except Exception:
+                continue
+            if "login" in self._page.url:
+                break
+
+            # 1) JSON: watchlist feeds carry symbol lists
+            for payload in self._captured:
+                if self._looks_like_watchlist(payload):
+                    self._walk_symbols(payload, found)
+
+            # 2) DOM fallback: read the Symbol column of the table. Each row
+            #    starts with the ticker, so take the first ticker per line.
+            if len(found) < 3:
+                found += [t for t in self._watchlist_from_dom(limit) if t not in found]
+            if found:
+                break
+        return found[:limit]
+
+    @staticmethod
+    def _looks_like_watchlist(payload: Any) -> bool:
+        try:
+            return "watchlist" in json.dumps(payload)[:4000].lower()
+        except Exception:
+            return False
+
+    def _watchlist_from_dom(self, limit: int) -> list[str]:
+        out: list[str] = []
+        try:
+            body = self._page.inner_text("body", timeout=3000)
+        except Exception:
+            return out
+        # Column headers / chrome that also match a 4-letter pattern -> skip
+        skip = {"PREV", "OPEN", "HIGH", "SORT"}
+        for line in body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m = self._PLAIN_TICKER_RE.match(line)  # anchored at line start
+            if m:
+                tk = m.group(1)
+                if tk not in skip and tk not in out:
+                    out.append(tk)
+            if len(out) >= limit:
+                break
+        return out
+
     # -- portfolio discovery --------------------------------------------
     # Real location (desktop): stockbit.com/securities/portfolio
     PORTFOLIO_URLS = (
