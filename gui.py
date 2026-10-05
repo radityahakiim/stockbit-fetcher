@@ -204,7 +204,7 @@ class App(tk.Tk):
         tbox = tk.LabelFrame(f, text=" Timing & connection ", padx=10, pady=8)
         tbox.grid(row=1, column=1, sticky="nwe")
         self.ent_interval = self._labeled_entry(tbox, 0, "Refresh interval (seconds):", "300")
-        self.ent_pagewait = self._labeled_entry(tbox, 1, "Page load wait (seconds):", "8")
+        self.ent_pagewait = self._labeled_entry(tbox, 1, "Page load wait cap (seconds, optional):", "")
         self.ent_top = self._labeled_entry(tbox, 2, "Trending tickers to track:", "10")
         self.ent_cdp = self._labeled_entry(tbox, 3, "Browser CDP endpoint:", "http://localhost:9222", width=24)
 
@@ -270,6 +270,8 @@ class App(tk.Tk):
     # ---------------- start / stop --------------------------------------
     def _start(self):
         try:
+            raw_pw = self.ent_pagewait.get().strip()
+            page_wait = max(2.0, float(raw_pw)) if raw_pw else None  # optional cap
             cfg = {
                 "portfolio": self.var_portfolio.get(),
                 "watchlist": self.var_watchlist.get(),
@@ -278,12 +280,13 @@ class App(tk.Tk):
                 "once": self.var_once.get(),
                 "tickers": [t.upper() for t in self.ent_tickers.get().split()],
                 "interval": max(5, int(self.ent_interval.get())),
-                "page_wait": max(2.0, float(self.ent_pagewait.get())),
+                "page_wait": page_wait,
                 "top": max(1, int(self.ent_top.get())),
                 "cdp": self.ent_cdp.get().strip(),
             }
         except ValueError:
-            messagebox.showerror("Invalid input", "Interval, page wait and trending count must be numbers.")
+            messagebox.showerror("Invalid input",
+                                 "Interval, page wait cap (if set) and trending count must be numbers.")
             return
         if not (cfg["portfolio"] or cfg["watchlist"] or cfg["trending"]
                 or cfg["movers"] or cfg["tickers"]):

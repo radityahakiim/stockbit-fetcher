@@ -192,7 +192,10 @@ def main() -> int:
     ap.add_argument("--once", action="store_true", help="single scan, then exit")
     ap.add_argument("--verbose", action="store_true", help="show the reasons behind each verdict")
     ap.add_argument("--cdp", default="http://localhost:9222", help="CDP endpoint of the running browser")
-    ap.add_argument("--page-wait", type=float, default=8.0, help="seconds to let each symbol page load")
+    ap.add_argument("--page-wait", type=float, default=None,
+                    help="OPTIONAL: maximum seconds to wait for a stock's data before giving up. "
+                         "By default the tool waits only as long as it takes for real data to "
+                         "arrive (capped internally at 20s) — set this only to override that cap.")
     args = ap.parse_args()
 
     if not args.tickers and not args.trending and not args.portfolio \

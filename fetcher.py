@@ -8,7 +8,7 @@ How it works
 2. This module attaches to that running browser via CDP
    (Playwright's connect_over_cdp), so it reuses YOUR logged-in
    Stockbit session and cookies.
-3. It navigates a tab to stockbit.com/symbol/<TICKER> and simply
+3. It navigates a tab to stockbit.com/symbol/<TICKER>/keystats and simply
    *listens* to the JSON responses the page itself loads (keystats,
    fundamentals, price). No requests are forged from Python.
 4. Metrics are extracted heuristically by name-matching, so minor
@@ -208,9 +208,18 @@ def _find_price(node: Any, ticker: str, depth: int = 0) -> tuple[Optional[float]
 # --------------------------------------------------------------------------
 
 class StockbitBrowserFetcher:
-    def __init__(self, cdp_url: str = CDP_URL_DEFAULT, page_wait_s: float = 8.0):
+    # Data-readiness polling: fetch() waits for real data instead of a fixed
+    # sleep. `page_wait_s` (constructor arg / --page-wait / GUI field) is now
+    # OPTIONAL — when None, DEFAULT_MAX_WAIT_S is used purely as a safety
+    # ceiling so a dead page can't hang forever; it does not slow down a
+    # page that responds quickly.
+    DEFAULT_MAX_WAIT_S = 20.0
+    POLL_INTERVAL_S = 0.35
+    MIN_METRICS_FOR_READY = 3
+
+    def __init__(self, cdp_url: str = CDP_URL_DEFAULT, page_wait_s: Optional[float] = None):
         self.cdp_url = cdp_url
-        self.page_wait_s = page_wait_s
+        self.page_wait_s = page_wait_s  # None = use DEFAULT_MAX_WAIT_S as the cap
         self._pw = None
         self._browser: Optional[Browser] = None
         self._page: Optional[Page] = None
@@ -266,42 +275,41 @@ class StockbitBrowserFetcher:
 
         self._captured.clear()
         try:
-            self._page.goto(f"https://stockbit.com/symbol/{snap.ticker}",
+            self._page.goto(f"https://stockbit.com/symbol/{snap.ticker}/keystats",
                             wait_until="domcontentloaded", timeout=30_000)
         except Exception as e:
             snap.error = f"navigation failed: {e}"
             return snap
 
-        # Let the page fire its XHRs; also nudge the Key Stats tab if present.
-        deadline = time.time() + self.page_wait_s
+        # Brief settle so the page's first XHRs can fire
         try:
-            self._page.wait_for_timeout(2500)
-            for label in ("Key Stats", "Keystats", "Fundamental"):
-                loc = self._page.get_by_text(label, exact=False)
-                if loc.count():
-                    loc.first.click(timeout=1500)
-                    break
+            self._page.wait_for_timeout(700)
         except Exception:
             pass
-        while time.time() < deadline:
-            self._page.wait_for_timeout(500)
 
         if "login" in self._page.url or "/#/login" in self._page.url:
             snap.error = "Stockbit shows the login page — sign in inside the Edge window."
             return snap
 
-        # Parse everything the browser received.
+        # Poll until actual stock data has arrived, instead of sleeping a
+        # fixed duration. `page_wait_s` is now an OPTIONAL safety cap — if
+        # set, it's the longest we'll wait before giving up; if left unset,
+        # a sensible built-in ceiling protects against a page that never
+        # responds. Either way, we stop as soon as real data shows up.
+        ceiling = self.page_wait_s if self.page_wait_s is not None else self.DEFAULT_MAX_WAIT_S
+        deadline = time.time() + max(ceiling, 1.0)
         pairs: list[tuple[str, Any]] = []
-        for payload in self._captured:
-            _walk_name_value_pairs(payload, pairs)
-            _walk_flat_keys(payload, pairs)
-            if snap.price is None:
-                p, c = _find_price(payload, snap.ticker)
-                if p:
-                    snap.price, snap.change_pct = p, c
+        while True:
+            pairs = self._collect_pairs()
+            metrics = extract_metrics(pairs)
+            price, change_pct = self._price_from_captured(snap.ticker)
+            ready = len(metrics) >= self.MIN_METRICS_FOR_READY or (price is not None and metrics)
+            if ready or time.time() >= deadline:
+                snap.metrics, snap.price, snap.change_pct = metrics, price, change_pct
+                break
+            self._page.wait_for_timeout(int(self.POLL_INTERVAL_S * 1000))
 
         snap.raw_names_seen = len(pairs)
-        snap.metrics = extract_metrics(pairs)
 
         # If JSON capture came up thin, read the Key Stats panels straight
         # off the page (label/value lines like "Return on Equity (TTM) 54.98%").
@@ -318,6 +326,22 @@ class StockbitBrowserFetcher:
             snap.error = ("no data captured — is the symbol valid and are you "
                           "logged in to Stockbit in the attached browser?")
         return snap
+
+    def _collect_pairs(self) -> list[tuple[str, Any]]:
+        """Re-walk everything captured so far into (name, value) pairs."""
+        pairs: list[tuple[str, Any]] = []
+        for payload in self._captured:
+            _walk_name_value_pairs(payload, pairs)
+            _walk_flat_keys(payload, pairs)
+        return pairs
+
+    def _price_from_captured(self, ticker: str) -> tuple[Optional[float], Optional[float]]:
+        for payload in self._captured:
+            p, c = _find_price(payload, ticker)
+            if p:
+                return p, c
+        return None, None
+
 
     # -- trending discovery ---------------------------------------------
     # The "Trending Stocks" strip lives at the top of /stream (desktop view).
@@ -703,7 +727,6 @@ class StockbitBrowserFetcher:
                     break
                 if not self._advance_carousel(container):
                     break
-                self._page.wait_for_timeout(600)
         except Exception:
             pass
         return out[:limit]
@@ -723,34 +746,101 @@ class StockbitBrowserFetcher:
     def _advance_carousel(self, container) -> bool:
         """Click the strip's 'next' arrow; if none found, horizontally
         scroll whatever descendant actually overflows."""
-        # a) an explicit next/right arrow button
-        for sel in ("[aria-label*='next' i]", "[aria-label*='right' i]",
-                    "button:has(svg)", "[class*='next' i]", "[class*='arrow' i]"):
-            try:
-                btns = container.locator(sel)
-                if btns.count():
-                    btns.last.click(timeout=1200)
-                    return True
-            except Exception:
-                continue
-        # b) generic: scroll the overflowing child one viewport to the right
         try:
-            moved = container.evaluate(
+            old_text = container.inner_text(timeout=2000)
+        except Exception:
+            old_text = ""
+
+        advanced = False
+        
+        # Hover the container to reveal the navigation buttons if they are hidden
+        try:
+            container.hover(timeout=1000)
+            self._page.wait_for_timeout(300)
+        except Exception:
+            pass
+
+        # a) an explicit next/right arrow button
+        try:
+            # The next arrow (>) and prev arrow (<) are often stacked on the right.
+            # We want the 'next' arrow, which is typically the topmost one on the right edge.
+            clicked = container.evaluate(
                 """(root) => {
-                    const nodes = [root, ...root.querySelectorAll('*')];
-                    for (const el of nodes) {
-                        if (el.scrollWidth > el.clientWidth + 20) {
-                            const before = el.scrollLeft;
-                            el.scrollLeft += el.clientWidth;
-                            if (el.scrollLeft !== before) return true;
+                    const sel = '[aria-label*="next" i], [aria-label*="right" i], [class*="next" i], button, svg';
+                    const els = Array.from(root.querySelectorAll(sel));
+                    const rootRect = root.getBoundingClientRect();
+                    
+                    // Filter for visible elements in the rightmost 20% of the container
+                    const rightEdge = els.filter(e => {
+                        const r = e.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0 && r.right > (rootRect.left + rootRect.width * 0.8);
+                    });
+                    
+                    if (rightEdge.length === 0) return false;
+                    
+                    // Sort by rightmost, then topmost
+                    rightEdge.sort((a, b) => {
+                        const ra = a.getBoundingClientRect();
+                        const rb = b.getBoundingClientRect();
+                        if (Math.abs(ra.right - rb.right) > 5) {
+                            return rb.right - ra.right;
                         }
+                        return ra.top - rb.top;
+                    });
+                    
+                    // Click the best candidate
+                    let target = rightEdge[0];
+                    const btn = target.closest('button, [role="button"]');
+                    if (btn) target = btn;
+                    
+                    // If the button is disabled or visually indicates it's at the end, do not click
+                    if (target.disabled || target.getAttribute('aria-disabled') === 'true' || 
+                        (target.className && typeof target.className === 'string' && target.className.toLowerCase().includes('disabled'))) {
+                        return false;
                     }
-                    return false;
+                    
+                    target.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+                    return true;
                 }"""
             )
-            return bool(moved)
+            if clicked:
+                advanced = True
         except Exception:
+            pass
+
+        if not advanced:
+            # b) generic: scroll the overflowing child one viewport to the right
+            try:
+                advanced = container.evaluate(
+                    """(root) => {
+                        const nodes = [root, ...root.querySelectorAll('*')];
+                        for (const el of nodes) {
+                            if (el.scrollWidth > el.clientWidth + 20) {
+                                const before = el.scrollLeft;
+                                el.scrollLeft += el.clientWidth;
+                                if (el.scrollLeft !== before) return true;
+                            }
+                        }
+                        return false;
+                    }"""
+                )
+            except Exception:
+                pass
+
+        if not advanced:
             return False
+
+        # Wait for the DOM text to actually change to avoid race conditions
+        for _ in range(15):
+            self._page.wait_for_timeout(200)
+            try:
+                new_text = container.inner_text(timeout=1000)
+                if new_text != old_text:
+                    return True
+            except Exception:
+                pass
+
+        return False
 
     def _walk_symbols(self, node: Any, out: list[str], depth: int = 0) -> None:
         if depth > 8:

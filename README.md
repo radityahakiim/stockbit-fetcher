@@ -41,6 +41,7 @@ python main.py --movers                       # monitor Movers: Top Value/Volume
 python main.py BBCA --trending                # your picks + whatever is trending
 python main.py BBCA BBRI --once --verbose     # one scan with reasons per verdict
 python main.py BBCA --interval 60 --cdp http://localhost:9333
+python main.py BBCA --page-wait 30              # optional: raise the max wait cap
 ```
 
 ## GUI version (Tkinter)
@@ -55,6 +56,12 @@ A classic-style desktop GUI with two screens:
 2. **Monitor screen:** the same live table, updated after every stock — color-coded verdicts (green HOLD/WORTH TO BUY, red SELL/NOT WORTH TO BUY, amber NEUTRAL), owned stocks tagged "(In Portfolio)" with Avg and P&L%, a status line with countdown, **Pause Timer** and **Refresh** buttons (pause freezes the countdown; refresh starts a new cycle immediately), and a "Why" panel that shows the scoring reasons when you select a row. "Stop & Back to Setup" returns to the checklist.
 
 The GUI runs the same `fetcher.py` + `scoring.py` engine on a background thread, so the window stays responsive during page loads. Tkinter ships with Python on Windows; on Linux install `python3-tk`.
+
+## How long each fetch takes
+
+Each stock is fetched **as soon as its real data arrives** — the tool polls the page every ~350ms and stops the moment enough fundamentals (or at least a price) have been captured, rather than sleeping a fixed duration. A fast-loading page returns in a couple of seconds; a slow one keeps polling.
+
+`--page-wait` (CLI) / "Page load wait cap" (GUI) is **optional** and only matters as a safety ceiling — the longest the tool will wait before giving up on a stock. Leave it unset and a built-in ~20s cap protects against a page that never responds; set it explicitly only if you want a shorter or longer cap than that.
 
 ## Live table
 
